@@ -1,11 +1,190 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Chat</title></head>
+<head>
+  <meta charset="utf-8">
+  <title>Chat</title>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    #messages { border: 1px solid #ccc; height: 260px; overflow-y: auto; padding: 8px; margin-top: 8px; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    input, select, button { padding: 6px; }
+    #typing { color: #666; margin-top: 6px; height: 18px; }
+    #roomTyping { color: #666; margin-top: 6px; height: 18px; }
+  </style>
+</head>
 <body>
-  <h1>Chat page</h1>
+  <h1>Chat</h1>
+
+  <div class="row">
+    <strong id="who"></strong>
+    <button id="logoutBtn">Logout</button>
+  </div>
+
+  <hr/>
+
+  <h3>Rooms</h3>
+  <div class="row">
+    <select id="roomSelect">
+      <option value="room1">room1</option>
+      <option value="room2">room2</option>
+      <option value="room3">room3</option>
+      <option value="room4">room4</option>
+      <option value="room5">room5</option>
+    </select>
+
+    <button id="joinBtn">Join Room</button>
+    <button id="leaveBtn">Leave Room</button>
+
+    <span id="currentRoom"></span>
+  </div>
+
+  <div id="messages"></div>
+
+  <div id="roomTyping"></div>
+
+  <div class="row" style="margin-top:10px;">
+    <input id="roomMsg" placeholder="Type message to room..." style="width: 320px;">
+    <button id="sendRoomBtn">Send to Room</button>
+  </div>
+
+  <hr/>
+
+  <h3>Private (1-to-1)</h3>
+  <div class="row">
+    <input id="toUser" placeholder="to_user (username)">
+    <input id="dmMsg" placeholder="Type private message..." style="width: 320px;">
+    <button id="sendDmBtn">Send DM</button>
+  </div>
+
+  <div id="typing"></div>
+
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
+
+    const user = JSON.parse(localStorage.getItem("user") || "null");
+    if (!user?.username) window.location.href = "/login";
+    document.getElementById("who").textContent = `Logged in as: ${user.username}`;
+
+    socket.emit("register", { username: user.username });
+
+    const messagesDiv = document.getElementById("messages");
+    const typingDiv = document.getElementById("typing");
+    const roomTypingDiv = document.getElementById("roomTyping");
+    const currentRoomSpan = document.getElementById("currentRoom");
+
+    let currentRoom = null;
+    let typingTimer = null;
+    let roomTypingTimer = null;
+
+    function addLine(text) {
+      const p = document.createElement("div");
+      p.textContent = text;
+      messagesDiv.appendChild(p);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    document.getElementById("joinBtn").onclick = () => {
+      const room = document.getElementById("roomSelect").value;
+      socket.emit("joinRoom", { room });
+    };
+
+    document.getElementById("leaveBtn").onclick = () => {
+      socket.emit("leaveRoom");
+      currentRoom = null;
+      currentRoomSpan.textContent = "";
+      addLine("You left the room.");
+      roomTypingDiv.textContent = "";
+    };
+
+    socket.on("joinedRoom", ({ room }) => {
+      currentRoom = room;
+      currentRoomSpan.textContent = `Current room: ${room}`;
+      messagesDiv.innerHTML = "";
+      addLine(`Joined room: ${room}`);
+      roomTypingDiv.textContent = "";
+    });
+
+    socket.on("leftRoom", () => {
+      currentRoom = null;
+      currentRoomSpan.textContent = "";
+      roomTypingDiv.textContent = "";
+    });
+
+    socket.on("roomHistory", (history) => {
+      messagesDiv.innerHTML = "";
+      history.forEach(m => addLine(`[${new Date(m.date_sent).toLocaleTimeString()}] ${m.from_user}: ${m.message}`));
+    });
+
+    document.getElementById("sendRoomBtn").onclick = () => {
+      const msg = document.getElementById("roomMsg").value.trim();
+      if (!currentRoom) return alert("Join a room first.");
+      if (!msg) return;
+      socket.emit("sendRoomMessage", { room: currentRoom, message: msg });
+      document.getElementById("roomMsg").value = "";
+      socket.emit("roomTyping", { room: currentRoom, isTyping: false });
+    };
+
+    socket.on("roomMessage", (m) => {
+      addLine(`[${new Date(m.date_sent).toLocaleTimeString()}] ${m.from_user}: ${m.message}`);
+    });
+
+    
+    document.getElementById("roomMsg").addEventListener("input", () => {
+      if (!currentRoom) return;
+
+      socket.emit("roomTyping", { room: currentRoom, isTyping: true });
+
+      clearTimeout(roomTypingTimer);
+      roomTypingTimer = setTimeout(() => {
+        socket.emit("roomTyping", { room: currentRoom, isTyping: false });
+      }, 800);
+    });
+
+    socket.on("roomTyping", ({ from_user, room, isTyping }) => {
+      if (!currentRoom || room !== currentRoom) return;
+      roomTypingDiv.textContent = isTyping ? `${from_user} is typing in ${room}...` : "";
+    });
+
+    
+    document.getElementById("sendDmBtn").onclick = () => {
+      const to_user = document.getElementById("toUser").value.trim();
+      const msg = document.getElementById("dmMsg").value.trim();
+      if (!to_user || !msg) return;
+      socket.emit("sendPrivateMessage", { to_user, message: msg });
+      document.getElementById("dmMsg").value = "";
+      socket.emit("typing", { to_user, isTyping: false });
+    };
+
+    socket.on("privateMessage", (m) => {
+      addLine(`[DM ${new Date(m.date_sent).toLocaleTimeString()}] ${m.from_user} -> ${m.to_user}: ${m.message}`);
+    });
+
+    document.getElementById("dmMsg").addEventListener("input", () => {
+      const to_user = document.getElementById("toUser").value.trim();
+      if (!to_user) return;
+
+      socket.emit("typing", { to_user, isTyping: true });
+
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => {
+        socket.emit("typing", { to_user, isTyping: false });
+      }, 800);
+    });
+
+    socket.on("typing", ({ from_user, isTyping }) => {
+      typingDiv.textContent = isTyping ? `${from_user} is typing...` : "";
+    });
+
+    document.getElementById("logoutBtn").onclick = () => {
+      localStorage.removeItem("user");
+      window.location.href = "/login";
+    };
+
+    socket.on("errorMsg", ({ message }) => alert(message));
   </script>
 </body>
 </html>
+
+
+
